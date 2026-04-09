@@ -1,8 +1,8 @@
 import streamlit as st
-import openai
-import base64
+from groq import Groq
 import json
 import re
+import base64
 from PIL import Image
 import io
 
@@ -101,9 +101,9 @@ hr { border-color: #2e2e3a; }
 """, unsafe_allow_html=True)
 
 
-# ── Pricing (GPT-4o-mini) ──────────────────────────────────────────────────────
-PRICE_INPUT_PER_TOKEN  = 0.150 / 1_000_000   # $0.150 per 1M input tokens
-PRICE_OUTPUT_PER_TOKEN = 0.600 / 1_000_000   # $0.600 per 1M output tokens
+# ── Pricing (llama-3.2-11b-vision — free tier) ────────────────────────────────
+PRICE_INPUT_PER_TOKEN  = 0.0   # free
+PRICE_OUTPUT_PER_TOKEN = 0.0   # free
 
 
 def calc_cost(input_tokens: int, output_tokens: int) -> float:
@@ -117,12 +117,14 @@ if "total_output_tokens" not in st.session_state:
     st.session_state.total_output_tokens = 0
 if "last_usage" not in st.session_state:
     st.session_state.last_usage = None
+if "result" not in st.session_state:
+    st.session_state.result = None
 
 
 # ── Sidebar — cost tracker ─────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 💰 Стоимость")
-    st.caption("Цены GPT-4o-mini")
+    st.caption("llama-3.2-11b-vision (бесплатно)")
 
     if st.session_state.last_usage:
         u = st.session_state.last_usage
@@ -153,12 +155,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("Input: $0.15 / 1M tok\nOutput: $0.60 / 1M tok")
-
-
-# ── OpenAI client ──────────────────────────────────────────────────────────────
-def get_client() -> openai.OpenAI:
-    return openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    st.caption("Groq free tier 🎉")
 
 
 # ── System prompt ──────────────────────────────────────────────────────────────
@@ -193,19 +190,18 @@ def image_to_base64(image_file) -> tuple[str, str]:
     img = Image.open(image_file)
     img.thumbnail((1024, 1024), Image.LANCZOS)
     buffer = io.BytesIO()
-    fmt = img.format or "JPEG"
-    img.save(buffer, format=fmt)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8"), fmt.lower()
+    img.save(buffer, format="JPEG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8"), "image/jpeg"
 
 
 def generate_copy(image_file, keywords: str) -> tuple[dict, dict]:
     """Returns (result_dict, usage_dict)."""
-    client = get_client()
-    b64, fmt = image_to_base64(image_file)
-    mime = f"image/{'jpeg' if fmt in ('jpg', 'jpeg') else fmt}"
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+    b64, media_type = image_to_base64(image_file)
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        max_tokens=1500,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -214,10 +210,7 @@ def generate_copy(image_file, keywords: str) -> tuple[dict, dict]:
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime};base64,{b64}",
-                            "detail": "high",
-                        },
+                        "image_url": {"url": f"data:{media_type};base64,{b64}"},
                     },
                     {
                         "type": "text",
@@ -226,8 +219,6 @@ def generate_copy(image_file, keywords: str) -> tuple[dict, dict]:
                 ],
             },
         ],
-        max_tokens=1500,
-        temperature=0.7,
     )
 
     raw = response.choices[0].message.content
@@ -267,7 +258,6 @@ with col_input:
         label_visibility="collapsed",
     )
 
-    # ── Image preview ──────────────────────────────────────────────────────────
     if uploaded_file:
         st.image(uploaded_file, use_container_width=True)
 
@@ -290,47 +280,42 @@ with col_output:
         elif not keywords.strip():
             st.warning("⚠️ Добавь хотя бы несколько ключевых слов.")
         else:
-            with st.spinner("GPT-4o анализирует товар..."):
+            with st.spinner("Groq анализирует товар..."):
                 try:
                     result, usage = generate_copy(uploaded_file, keywords)
-
-                    # Обновляем счётчик токенов
+                    st.session_state.result = result
                     st.session_state.last_usage = usage
                     st.session_state.total_input_tokens  += usage["input"]
                     st.session_state.total_output_tokens += usage["output"]
-
-                    # ── Tabs ───────────────────────────────────────────────────
-                    tab_insta, tab_kaspi, tab_site = st.tabs(
-                        ["📱 Instagram", "🛒 Kaspi", "🌐 Сайт"]
-                    )
-
-                    with tab_insta:
-                        render_result_card(result.get("instagram", "—"), "card-insta")
-
-                    with tab_kaspi:
-                        render_result_card(result.get("kaspi", "—"), "card-kaspi")
-
-                    with tab_site:
-                        render_result_card(result.get("website", "—"), "card-website")
-
-                    st.download_button(
-                        label="⬇️ Скачать JSON",
-                        data=json.dumps(result, ensure_ascii=False, indent=2),
-                        file_name="copy_result.json",
-                        mime="application/json",
-                    )
-
-                    st.rerun()  # обновляем sidebar с новыми токенами
-
-                except openai.AuthenticationError:
-                    st.error("❌ Неверный API-ключ. Проверь `.streamlit/secrets.toml`.")
-                except openai.RateLimitError:
-                    st.error("❌ Превышен лимит OpenAI. Подожди немного.")
-                except json.JSONDecodeError:
-                    st.error("❌ Модель вернула невалидный JSON. Попробуй ещё раз.")
                 except Exception as e:
-                    st.error(f"❌ Ошибка: {e}")
-    else:
+                    err = str(e).lower()
+                    if "api_key" in err or "permission" in err or "unauthorized" in err:
+                        st.error("❌ Неверный API-ключ. Проверь `.streamlit/secrets.toml`.")
+                    elif "quota" in err or "rate" in err or "resource exhausted" in err:
+                        st.error("❌ Превышен лимит Groq API. Подожди немного.")
+                    elif isinstance(e, (ValueError, json.JSONDecodeError)):
+                        st.error("❌ Модель вернула невалидный JSON. Попробуй ещё раз.")
+                    else:
+                        st.error(f"❌ Ошибка: {e}")
+
+    if st.session_state.result:
+        result = st.session_state.result
+        tab_insta, tab_kaspi, tab_site = st.tabs(
+            ["📱 Instagram", "🛒 Kaspi", "🌐 Сайт"]
+        )
+        with tab_insta:
+            render_result_card(result.get("instagram", "—"), "card-insta")
+        with tab_kaspi:
+            render_result_card(result.get("kaspi", "—"), "card-kaspi")
+        with tab_site:
+            render_result_card(result.get("website", "—"), "card-website")
+        st.download_button(
+            label="⬇️ Скачать JSON",
+            data=json.dumps(result, ensure_ascii=False, indent=2),
+            file_name="copy_result.json",
+            mime="application/json",
+        )
+    elif not generate_btn:
         st.markdown(
             """
             <div style="
