@@ -101,9 +101,9 @@ hr { border-color: #2e2e3a; }
 """, unsafe_allow_html=True)
 
 
-# ── Pricing (llama-3.2-11b-vision — free tier) ────────────────────────────────
-PRICE_INPUT_PER_TOKEN  = 0.0   # free
-PRICE_OUTPUT_PER_TOKEN = 0.0   # free
+# ── Hypothetical Claude Opus 4.6 pricing (actual requests go through Groq) ────
+PRICE_INPUT_PER_TOKEN  = 5.00  / 1_000_000   # $5.00 per 1M input tokens
+PRICE_OUTPUT_PER_TOKEN = 25.00 / 1_000_000   # $25.00 per 1M output tokens
 
 
 def calc_cost(input_tokens: int, output_tokens: int) -> float:
@@ -124,7 +124,7 @@ if "result" not in st.session_state:
 # ── Sidebar — cost tracker ─────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 💰 Стоимость")
-    st.caption("llama-3.2-11b-vision (бесплатно)")
+    st.caption("Groq (бесплатно) · цены как у Claude Opus")
 
     if st.session_state.last_usage:
         u = st.session_state.last_usage
@@ -133,7 +133,7 @@ with st.sidebar:
         col1, col2 = st.columns(2)
         col1.metric("Вход", f"{u['input']:,} tok")
         col2.metric("Выход", f"{u['output']:,} tok")
-        st.metric("Стоимость", f"${last_cost:.5f}")
+        st.metric("Стоимость на Claude", f"${last_cost:.5f}")
     else:
         st.info("Здесь появится стоимость после первой генерации.")
 
@@ -146,7 +146,7 @@ with st.sidebar:
     st.markdown("**За сессию**")
     st.metric("Всего токенов",
               f"{st.session_state.total_input_tokens + st.session_state.total_output_tokens:,}")
-    st.metric("Итого", f"${total_cost:.5f}")
+    st.metric("Итого (если бы Claude)", f"${total_cost:.5f}")
 
     if st.button("Сбросить счётчик", use_container_width=True):
         st.session_state.total_input_tokens  = 0
@@ -155,7 +155,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("Groq free tier 🎉")
+    st.caption("Реально потрачено: $0.00 (Groq)\nГипотетически Claude Opus: $5/1M in · $25/1M out")
 
 
 # ── System prompt ──────────────────────────────────────────────────────────────
@@ -287,6 +287,7 @@ with col_output:
                     st.session_state.last_usage = usage
                     st.session_state.total_input_tokens  += usage["input"]
                     st.session_state.total_output_tokens += usage["output"]
+                    st.rerun()
                 except Exception as e:
                     err = str(e).lower()
                     if "api_key" in err or "permission" in err or "unauthorized" in err:
